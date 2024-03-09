@@ -16,7 +16,7 @@ namespace PicDiskSlimmer
                 });
 
             builder.Services.AddMauiBlazorWebView();
-
+            builder.Services.AddSingleton<SettingsService>();
 #if DEBUG
     		builder.Services.AddBlazorWebViewDeveloperTools();
     		builder.Logging.AddDebug();

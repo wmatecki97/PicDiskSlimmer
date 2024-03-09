@@ -1,37 +1,53 @@
 ﻿@page "/"
 @using CommunityToolkit.Maui.Storage
-@using Microsoft.Maui.Storage
 @using SixLabors.ImageSharp
 @using SixLabors.ImageSharp.Formats.Jpeg
+@inject SettingsService SettingsService
 
 <h1>Image Directory Processing</h1>
 
 <p>Select a directory containing JPEG images to process.</p>
 
-<button @onclick="SelectDirectory">Select Directory</button>
+<button class="btn btn-primary" @onclick="SelectDirectory">Select Directory</button>
 
 @if (selectedDirectory != null)
 {
     <p>Selected Directory: @selectedDirectory</p>
     <p>Number of JPEG images: @jpegCount</p>
-    <p>Total size of JPEG images: @totalSize</p>
-    <button @onclick="ProcessImages">Process Images</button>
+    <p>Total size of JPEG images: @(totalSize / 1024 / 1024) MB</p>
+    @if (!isProcessing)
+    {
+        <button class="btn btn-primary" @onclick="ProcessImages">Process Images</button>
+    }
+    else
+    {
+        <button class="btn btn-primary" @onclick="StopProcessing">Stop Processing</button>
+    }
 
     @if (isProcessing)
     {
-        <p>Processing images...</p>
+        <p>Processing images... (@processedCount / @jpegCount)</p>
         <progress class="progress is-info" value="@progress" max="100">@($"{progress}%")</progress>
     }
     else if (processedImages.Count > 0)
     {
-        <p>Processed Images:</p>
-        <ul>
-            @foreach (var image in processedImages)
+        <p>Processed Images: @(processedImages.Count)</p>
+
+        <p>Total size of processed images: @(processedImagesSize / 1024 / 1024) MB</p>
+        <p>Initial size: @(totalSize / 1024 / 1024) MB</p>
+        @if (!settings.DeleteBaseImagesAfterProcessing)
+        {
+
+            @if (!isDeletingBaseImages && !sourceImagesDeleted)
             {
-                <li>@image</li>
+                <button class="btn btn-primary" @onclick="DeleteBaseImages">Delete Base Images</button>
             }
-        </ul>
-        <button @onclick="DeleteBaseImages">Delete Base Images</button>
+            else
+            {
+                <p>Deleting base images... (@deletedCount / @jpegCount)</p>
+                <progress class="progress is-info" value="@deleteProgress" max="100">@($"{deleteProgress}%")</progress>
+            }
+        }
     }
 }
 
@@ -39,9 +55,154 @@
     private string? selectedDirectory;
     private int jpegCount;
     private long totalSize;
+    private long processedImagesSize;
     private bool isProcessing;
     private List<string> processedImages = new();
     private double progress;
+    private int processedCount;
+    private int quality;
+    private CancellationTokenSource cancellationTokenSource = new();
+
+    private bool isDeletingBaseImages;
+    private bool sourceImagesDeleted;
+    private double deleteProgress;
+    private int deletedCount;
+
+    private Settings settings;
+
+    protected override void OnInitialized()
+    {
+        settings = SettingsService.LoadSettings();
+        quality = settings.Quality;
+        isProcessing = false;
+        processedImages = new List<string>();
+        isDeletingBaseImages = false;
+        sourceImagesDeleted = false;
+        cancellationTokenSource = new CancellationTokenSource();
+    }
+
+
+
+
+
+    private async Task ProcessImages()
+    {
+        sourceImagesDeleted = false;
+
+        isProcessing = true;
+        processedImages.Clear();
+        processedImagesSize = 0;
+        progress = 0;
+        processedCount = 0;
+        cancellationTokenSource = new CancellationTokenSource();
+
+        try
+        {
+            var files = Directory.GetFiles(selectedDirectory, "*.jpg", SearchOption.AllDirectories).Where(file => !file.EndsWith($"_quality_{quality}.jpg")).ToArray();
+            double totalFiles = files.Length;
+            var batches = files.Select((fileName, i) => (fileName, i)).GroupBy(x => (int)(x.i / settings.ParallelProcessingThreadsCount));
+            foreach (var batch in batches)
+            {
+                Parallel.ForEach(batch, file =>
+                {
+                    ProcessImage(file.fileName);
+                    if (settings.DeleteBaseImagesAfterProcessing)
+                    {
+                        File.Delete(file.fileName);
+                    }
+                    Interlocked.Increment(ref processedCount);
+                });
+
+                progress = (processedCount / totalFiles) * 100;
+                StateHasChanged();
+                await Task.Delay(100);
+
+                if (cancellationTokenSource.IsCancellationRequested)
+                {
+                    break;
+                }
+            }
+
+
+        }
+        catch (OperationCanceledException)
+        {
+            // Processing was canceled
+        }
+        catch (Exception ex)
+        {
+            // Handle directory access exceptions
+            Console.WriteLine(ex.Message);
+        }
+        isProcessing = false;
+    }
+
+
+
+    private void ProcessImage(string file)
+    {
+        try
+        {
+            using var image = SixLabors.ImageSharp.Image.Load(file);
+            string outputFile = $"{Path.GetFileNameWithoutExtension(file)}_quality_{quality}.jpg";
+            outputFile = Path.Combine(Path.GetDirectoryName(file), outputFile);
+
+            image.SaveAsJpeg(outputFile, new JpegEncoder { Quality = quality });
+            processedImages.Add(outputFile);
+
+            var fileInfo = new FileInfo(outputFile);
+            processedImagesSize += fileInfo.Length;
+        }
+        catch (OperationCanceledException)
+        {
+            // Processing was canceled
+        }
+        catch (Exception ex)
+        {
+            // Handle image processing exceptions
+            Console.WriteLine(ex.Message);
+        }
+    }
+
+    private void DeleteBaseImages()
+    {
+        isDeletingBaseImages = true;
+        deleteProgress = 0;
+        deletedCount = 0;
+
+        try
+        {
+            var files = Directory.GetFiles(selectedDirectory, "*.jpg", SearchOption.AllDirectories);
+            double totalFiles = files.Length;
+
+            foreach (var file in files)
+            {
+                if (!file.EndsWith($"_quality_{quality}.jpg"))
+                {
+                    File.Delete(file);
+                    deletedCount++;
+                    deleteProgress = (deletedCount / totalFiles / 2) * 100;
+                    InvokeAsync(() =>
+                    {
+                        StateHasChanged(); // Trigger UI update
+                    });
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // Handle directory access exceptions
+            Console.WriteLine(ex.Message);
+        }
+
+        isDeletingBaseImages = false;
+        sourceImagesDeleted = true;
+    }
+    private void StopProcessing()
+    {
+        cancellationTokenSource.Cancel();
+    }
+
 
     private async Task SelectDirectory()
     {
@@ -74,7 +235,7 @@
         totalSize = 0;
         try
         {
-            var files = Directory.GetFiles(directory, "*.jpg", SearchOption.AllDirectories);
+            var files = Directory.GetFiles(directory, "*.jpg", SearchOption.AllDirectories).Where(file => !file.EndsWith($"_quality_{quality}.jpg")).ToArray();
             jpegCount = files.Length;
             foreach (var file in files)
             {
@@ -89,72 +250,4 @@
         }
     }
 
-    private async Task ProcessImages()
-    {
-        isProcessing = true;
-        processedImages.Clear();
-        progress = 0;
-        try
-        {
-            var files = Directory.GetFiles(selectedDirectory, "*.jpg", SearchOption.AllDirectories);
-            double totalFiles = files.Length;
-            int processedCount = 0;
-
-            foreach (var file in files)
-            {
-                if (!file.EndsWith("_quality.jpg"))
-                {
-                    await ProcessImage(file);
-                }
-
-                processedCount++;
-                progress = (processedCount / totalFiles) * 100;
-                StateHasChanged(); // Trigger UI update
-            }
-        }
-        catch (Exception ex)
-        {
-            // Handle directory access exceptions
-            Console.WriteLine(ex.Message);
-        }
-        isProcessing = false;
-    }
-
-    private async Task ProcessImage(string file)
-    {
-        try
-        {
-            using var image = await SixLabors.ImageSharp.Image.LoadAsync(file);
-            string outputFile = Path.GetFileNameWithoutExtension(file) + "_quality.jpg";
-            outputFile = Path.Combine(Path.GetDirectoryName(file), outputFile);
-
-            await image.SaveAsJpegAsync(outputFile, new JpegEncoder { Quality = 70 });
-            processedImages.Add(outputFile);
-        }
-        catch (Exception ex)
-        {
-            // Handle image processing exceptions
-            Console.WriteLine(ex.Message);
-        }
-    }
-
-    private void DeleteBaseImages()
-    {
-        try
-        {
-            var files = Directory.GetFiles(selectedDirectory, "*.jpg", SearchOption.AllDirectories);
-            foreach (var file in files)
-            {
-                if (!file.EndsWith("_quality.jpg"))
-                {
-                    File.Delete(file);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            // Handle directory access exceptions
-            Console.WriteLine(ex.Message);
-        }
-    }
 }

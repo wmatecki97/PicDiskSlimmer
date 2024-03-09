@@ -1,0 +1,160 @@
+﻿@page "/"
+@using CommunityToolkit.Maui.Storage
+@using Microsoft.Maui.Storage
+@using SixLabors.ImageSharp
+@using SixLabors.ImageSharp.Formats.Jpeg
+
+<h1>Image Directory Processing</h1>
+
+<p>Select a directory containing JPEG images to process.</p>
+
+<button @onclick="SelectDirectory">Select Directory</button>
+
+@if (selectedDirectory != null)
+{
+    <p>Selected Directory: @selectedDirectory</p>
+    <p>Number of JPEG images: @jpegCount</p>
+    <p>Total size of JPEG images: @totalSize</p>
+    <button @onclick="ProcessImages">Process Images</button>
+
+    @if (isProcessing)
+    {
+        <p>Processing images...</p>
+        <progress class="progress is-info" value="@progress" max="100">@($"{progress}%")</progress>
+    }
+    else if (processedImages.Count > 0)
+    {
+        <p>Processed Images:</p>
+        <ul>
+            @foreach (var image in processedImages)
+            {
+                <li>@image</li>
+            }
+        </ul>
+        <button @onclick="DeleteBaseImages">Delete Base Images</button>
+    }
+}
+
+@code {
+    private string? selectedDirectory;
+    private int jpegCount;
+    private long totalSize;
+    private bool isProcessing;
+    private List<string> processedImages = new();
+    private double progress;
+
+    private async Task SelectDirectory()
+    {
+        try
+        {
+            var result = await FolderPicker.Default.PickAsync();
+            if (result != null)
+            {
+                selectedDirectory = result.Folder.Path;
+                await CountJpegImages(selectedDirectory);
+            }
+            else
+            {
+                selectedDirectory = null;
+                jpegCount = 0;
+                totalSize = 0;
+                processedImages.Clear();
+            }
+        }
+        catch (Exception ex)
+        {
+            // Handle folder picker exceptions
+            Console.WriteLine(ex.Message);
+        }
+    }
+
+    private async Task CountJpegImages(string directory)
+    {
+        jpegCount = 0;
+        totalSize = 0;
+        try
+        {
+            var files = Directory.GetFiles(directory, "*.jpg", SearchOption.AllDirectories);
+            jpegCount = files.Length;
+            foreach (var file in files)
+            {
+                var fileInfo = new FileInfo(file);
+                totalSize += fileInfo.Length;
+            }
+        }
+        catch (Exception ex)
+        {
+            // Handle directory access exceptions
+            Console.WriteLine(ex.Message);
+        }
+    }
+
+    private async Task ProcessImages()
+    {
+        isProcessing = true;
+        processedImages.Clear();
+        progress = 0;
+        try
+        {
+            var files = Directory.GetFiles(selectedDirectory, "*.jpg", SearchOption.AllDirectories);
+            double totalFiles = files.Length;
+            int processedCount = 0;
+
+            foreach (var file in files)
+            {
+                if (!file.EndsWith("_quality.jpg"))
+                {
+                    await ProcessImage(file);
+                }
+
+                processedCount++;
+                progress = (processedCount / totalFiles) * 100;
+                StateHasChanged(); // Trigger UI update
+            }
+        }
+        catch (Exception ex)
+        {
+            // Handle directory access exceptions
+            Console.WriteLine(ex.Message);
+        }
+        isProcessing = false;
+    }
+
+    private async Task ProcessImage(string file)
+    {
+        try
+        {
+            using var image = await SixLabors.ImageSharp.Image.LoadAsync(file);
+            string outputFile = Path.GetFileNameWithoutExtension(file) + "_quality.jpg";
+            outputFile = Path.Combine(Path.GetDirectoryName(file), outputFile);
+
+            await image.SaveAsJpegAsync(outputFile, new JpegEncoder { Quality = 70 });
+            processedImages.Add(outputFile);
+        }
+        catch (Exception ex)
+        {
+            // Handle image processing exceptions
+            Console.WriteLine(ex.Message);
+        }
+    }
+
+    private void DeleteBaseImages()
+    {
+        try
+        {
+            var files = Directory.GetFiles(selectedDirectory, "*.jpg", SearchOption.AllDirectories);
+            foreach (var file in files)
+            {
+                if (!file.EndsWith("_quality.jpg"))
+                {
+                    File.Delete(file);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // Handle directory access exceptions
+            Console.WriteLine(ex.Message);
+        }
+    }
+}
